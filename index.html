@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="ja" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JSON Formatter & Viewer — Monaco + JSON5</title>
+  <meta name="description" content="貼り付けたJSONを瞬時に整形＆色付け。エラー位置も可視化。単一HTMLのシングルページアプリ。" />
+  <!-- Tailwind (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Tailwind base theme config (optional)
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ["Inter", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "Roboto", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Meiryo", "sans-serif"] },
+          boxShadow: { 'soft': '0 10px 30px rgba(0,0,0,0.12)' }
+        }
+      },
+      darkMode: 'class'
+    }
+  </script>
+  <!-- Inter font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- JSON5 (許容的なJSONパーサ) -->
+  <script src="https://cdn.jsdelivr.net/npm/json5@2/dist/index.min.js"></script>
+
+  <!-- Monaco Editor (VS Codeのエンジン) -->
+  <!-- Loader: file:// でも動くよう Worker を data URL で差し替え -->
+  <script>
+    window.MonacoEnvironment = {
+      getWorkerUrl: function (_moduleId, label) {
+        const base = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/';
+        const code = `self.MonacoEnvironment={baseUrl:"${base}"};importScripts("${base}vs/base/worker/workerMain.js");`;
+        return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+      }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+  <script>
+    // i18n (日本語メッセージを優先) ※一部英語のままの場合があります
+    require.config({
+      paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' },
+    });
+  </script>
+
+  <style>
+    /* ちょっとリッチな見た目の微調整 */
+    html, body { height: 100%; }
+    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans JP, Hiragino Kaku Gothic ProN, Meiryo, sans-serif; }
+    .glass {
+      background: rgba(255,255,255,0.6);
+      backdrop-filter: saturate(160%) blur(10px);
+    }
+    .dark .glass { background: rgba(30,36,46,0.6); }
+    .monaco { border-radius: 14px; overflow: hidden; box-shadow: 0 12px 30px rgba(0,0,0,0.12); }
+    ::-webkit-scrollbar { height: 10px; width: 10px; }
+    ::-webkit-scrollbar-thumb { border-radius: 9999px; background: #a3a3a3; }
+    .kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem 0.5rem; /* py-1 px-2 */
+  border-radius: 0.375rem; /* rounded-md */
+  font-size: 0.75rem; /* text-xs */
+  font-weight: 500; /* font-medium */
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.03);
+}
+.dark .kbd {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+}
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-900 to-slate-900 text-slate-100">
+  <!-- Header -->
+  <header class="sticky top-0 z-50">
+    <div class="glass shadow-soft px-4 sm:px-6 py-3 border-b border-white/10">
+      <div class="max-w-7xl mx-auto flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex items-center gap-3">
+          <div class="h-9 w-9 rounded-xl bg-gradient-to-br from-indigo-400 to-fuchsia-500 shadow-soft"></div>
+          <div>
+            <h1 class="text-lg sm:text-xl font-bold tracking-tight">JSON Formatter & Viewer</h1>
+            <p class="text-xs sm:text-sm text-slate-300">貼り付け→整形→色付け。エラー箇所もピンポイント表示。</p>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2" id="toolbar">
+          <button id="btnFormat" class="px-3 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-600 active:scale-[.98] transition font-semibold">整形 <span class="text-xs opacity-80">(⌘/Ctrl+Enter)</span></button>
+          <button id="btnMinify" class="px-3 py-2 rounded-xl bg-fuchsia-500 hover:bg-fuchsia-600 active:scale-[.98] transition font-semibold">ミニファイ <span class="text-xs opacity-80">(⇧+⌘/Ctrl+Enter)</span></button>
+          <button id="btnCopyOut" class="px-3 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 active:scale-[.98] transition font-semibold">出力をコピー</button>
+          <button id="btnCopyIn" class="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 active:scale-[.98] transition font-semibold">入力をコピー</button>
+          <label for="fileInput" class="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 cursor-pointer font-semibold">ファイルを読み込み</label>
+          <input id="fileInput" type="file" accept=".json,.txt,application/json" class="hidden">
+          <button id="btnDownload" class="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 active:scale-[.98] transition font-semibold">ダウンロード</button>
+          <button id="btnTheme" class="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 active:scale-[.98] transition font-semibold">テーマ切替</button>
+          <button id="btnClear" class="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 active:scale-[.98] transition font-semibold">入力クリア</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-5 items-stretch">
+      <!-- Input -->
+      <div class="monaco">
+        <div id="editor" class="h-[42vh] sm:h-[60vh]"></div>
+      </div>
+      <!-- Output + Status -->
+      <div class="flex flex-col gap-4">
+        <div class="monaco">
+          <div id="viewer" class="h-[32vh] sm:h-[48vh]"></div>
+        </div>
+        <div class="glass rounded-2xl p-4 shadow-soft border border-white/10">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h2 class="font-semibold text-sm">ステータス</h2>
+              <p id="statusText" class="text-sm text-slate-300">準備完了。JSON を左に貼り付けると自動で解析します。</p>
+            </div>
+            <div class="text-right">
+              <p class="text-xs text-slate-400">エラー: <span id="errorCount">0</span></p>
+            </div>
+          </div>
+          <ul id="errorList" class="mt-3 space-y-2 text-sm"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-8 glass rounded-2xl p-5 border border-white/10">
+      <h3 class="text-base font-semibold mb-2">Tips</h3>
+      <ul class="text-sm text-slate-300 list-disc pl-5 space-y-1">
+        <li>コメントや末尾カンマなど “少し壊れたJSON” も <code>JSON5</code> として読み込み、出力は標準JSONに整形します。</li>
+        <li>赤い波線やエラー一覧の <span class="font-semibold">行/列</span> をクリックで、その場所へフォーカスします。</li>
+        <li><span class="kbd">⌘/Ctrl</span> + <span class="kbd">Enter</span> で整形、<span class="kbd">⇧</span> + <span class="kbd">⌘/Ctrl</span> + <span class="kbd">Enter</span> でミニファイ。</li>
+      </ul>
+    </section>
+  </main>
+
+  <!-- Toast -->
+  <div id="toast" class="pointer-events-none fixed inset-x-0 top-3 flex justify-center opacity-0 transition-opacity"></div>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const statusText = $('#statusText');
+    const errorCountEl = $('#errorCount');
+    const errorList = $('#errorList');
+    const toast = (msg) => {
+      const el = $('#toast');
+      el.innerHTML = `<div class="glass border border-white/10 text-sm px-4 py-2 rounded-xl shadow-soft">${msg}</div>`;
+      el.style.opacity = 1;
+      setTimeout(() => el.style.opacity = 0, 1300);
+    }
+
+    // ダーク/ライト切替（MonacoとTailwindを同期）
+    const getTheme = () => localStorage.getItem('theme') || 'dark';
+    const setTheme = (theme) => {
+      localStorage.setItem('theme', theme);
+      document.documentElement.classList.toggle('dark', theme === 'dark');
+      if (window.monaco) monaco.editor.setTheme(theme === 'dark' ? 'vs-dark' : 'vs');
+    }
+    setTheme(getTheme());
+
+    let editor, viewer, inputModel;
+
+    require(['vs/editor/editor.main'], function () {
+      editor = monaco.editor.create(document.getElementById('editor'), {
+        value: localStorage.getItem('json-input') || '{\n  "message": "ここにJSONを貼り付けてね // コメントOK, 末尾カンマOK",\n  /* コメントも許容 (JSON5) */\n  "sample": [1, 2, 3,],\n}',
+        language: 'json',
+        automaticLayout: true,
+        theme: getTheme() === 'dark' ? 'vs-dark' : 'vs',
+        fontSize: 14,
+        fontLigatures: true,
+        minimap: { enabled: false },
+        wordWrap: 'on',
+        scrollbar: { verticalScrollbarSize: 12, horizontalScrollbarSize: 12 },
+      });
+
+      viewer = monaco.editor.create(document.getElementById('viewer'), {
+        value: '',
+        language: 'json',
+        automaticLayout: true,
+        theme: getTheme() === 'dark' ? 'vs-dark' : 'vs',
+        fontSize: 14,
+        readOnly: true,
+        minimap: { enabled: false },
+        wordWrap: 'on',
+        scrollbar: { verticalScrollbarSize: 12, horizontalScrollbarSize: 12 },
+      });
+
+      inputModel = editor.getModel();
+
+      // MonacoのJSON診断（バリデーション）
+      monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+        validate: true,
+        allowComments: true,
+        enableSchemaRequest: false,
+      });
+
+      // 入力が変わったら自動解析＆出力を更新（デバウンス）
+      let t;
+      editor.onDidChangeModelContent(() => {
+        localStorage.setItem('json-input', editor.getValue());
+        clearTimeout(t);
+        t = setTimeout(() => tryFormat({ silent: true }), 350);
+      });
+
+      // Monacoのマーカーが更新されたら、エラー一覧も更新
+      monaco.editor.onDidChangeMarkers((uris) => {
+        if (!uris.some(u => u.toString() === inputModel.uri.toString())) return;
+        updateErrorPanel();
+      });
+
+      // 初期整形トライ
+      tryFormat({ silent: true });
+    });
+
+    // JSONを整形 / ミニファイ
+    function tryFormat({ minify = false, silent = false } = {}) {
+      if (!window.monaco || !editor) return;
+      const text = editor.getValue();
+      // 既存のカスタムマーカーは消す
+      monaco.editor.setModelMarkers(inputModel, 'json5-parse', []);
+
+      try {
+        // JSON5として許容的にパース
+        const obj = JSON5.parse(text);
+        const pretty = minify ? JSON.stringify(obj) : JSON.stringify(obj, null, 2);
+        viewer.setValue(pretty);
+        statusText.textContent = minify ? 'OK: ミニファイ完了。' : 'OK: 整形完了。';
+        if (!silent) toast(minify ? 'ミニファイしたよ ✨' : '整形したよ ✨');
+        // 追加: Monacoのフォーマットアクションを入力側にも適用（型の助け程度）
+        // editor.getAction('editor.action.formatDocument')?.run(); // コメント等で乱れることがあるので任意
+        return true;
+      } catch (e) {
+        // エラーメッセージと位置を特定
+        const message = (e && e.message) ? String(e.message) : '不明なエラー';
+        let line = e.lineNumber || e.line || 1;
+        let column = e.columnNumber || e.column || 1;
+        // 一部環境では position/index しか来ないことがあるので補完
+        if ((!line || !column) && typeof e.at === 'number') {
+          const lc = indexToLineCol(text, e.at);
+          line = lc.line; column = lc.col;
+        }
+        // カスタムマーカー（赤波線）
+        monaco.editor.setModelMarkers(inputModel, 'json5-parse', [{
+          startLineNumber: Math.max(1, line),
+          startColumn: Math.max(1, column),
+          endLineNumber: Math.max(1, line),
+          endColumn: Math.max(1, column + 1),
+          message: message,
+          severity: monaco.MarkerSeverity.Error,
+        }]);
+        statusText.textContent = `エラー: ${message}`;
+        if (!silent) toast('エラーを見つけたよ ⚠️');
+        updateErrorPanel();
+        return false;
+      }
+    }
+
+    function updateErrorPanel() {
+      if (!window.monaco || !inputModel) return;
+      const markers = monaco.editor.getModelMarkers({ resource: inputModel.uri });
+      errorCountEl.textContent = markers.length;
+      errorList.innerHTML = '';
+      if (!markers.length) {
+        const ok = document.createElement('li');
+        ok.innerHTML = '<span class="text-emerald-300">問題は見つかりませんでした。</span>';
+        errorList.appendChild(ok);
+        return;
+      }
+      markers.forEach((m, i) => {
+        const li = document.createElement('li');
+        li.className = 'rounded-xl border border-white/10 p-3 hover:bg-white/5 transition cursor-pointer';
+        const pos = `行 ${m.startLineNumber}, 列 ${m.startColumn}`;
+        li.innerHTML = `<div class="font-medium">${escapeHtml(m.message)}</div><div class="text-xs text-slate-400 mt-1">${pos}</div>`;
+        li.addEventListener('click', () => {
+          editor.revealPositionInCenter({ lineNumber: m.startLineNumber, column: m.startColumn });
+          editor.setPosition({ lineNumber: m.startLineNumber, column: m.startColumn });
+          editor.focus();
+        });
+        errorList.appendChild(li);
+      });
+    }
+
+    function indexToLineCol(text, index) {
+      let line = 1, col = 1;
+      for (let i = 0; i < Math.min(index, text.length); i++) {
+        if (text[i] === '\n') { line++; col = 1; } else { col++; }
+      }
+      return { line, col };
+    }
+
+    function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+
+    // Buttons
+    $('#btnFormat').addEventListener('click', () => tryFormat());
+    $('#btnMinify').addEventListener('click', () => tryFormat({ minify: true }));
+    $('#btnCopyOut').addEventListener('click', async () => {
+      await navigator.clipboard.writeText(viewer?.getValue() || '');
+      toast('出力をコピーしたよ 📋');
+    });
+    $('#btnCopyIn').addEventListener('click', async () => {
+      await navigator.clipboard.writeText(editor?.getValue() || '');
+      toast('入力をコピーしたよ 📋');
+    });
+    $('#btnTheme').addEventListener('click', () => setTheme(getTheme() === 'dark' ? 'light' : 'dark'));
+    $('#btnClear').addEventListener('click', () => { editor?.setValue(''); viewer?.setValue(''); toast('入力をクリアしたよ 🧹'); });
+
+    // ファイル読込
+    $('#fileInput').addEventListener('change', async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      const text = await f.text();
+      editor.setValue(text);
+      tryFormat({ silent: true });
+      toast('ファイルを読み込んだよ 📄');
+      e.target.value = '';
+    });
+
+    // ダウンロード（出力があれば出力、なければ入力）
+    $('#btnDownload').addEventListener('click', () => {
+      const content = (viewer?.getValue() || editor?.getValue() || '').trim();
+      const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'formatted.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast('ダウンロードしたよ ⬇️');
+    });
+
+    // ドラッグ＆ドロップでテキスト読込
+    ;['dragenter','dragover','dragleave','drop'].forEach(ev => {
+      window.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); });
+    });
+    window.addEventListener('drop', async (e) => {
+      const dt = e.dataTransfer;
+      if (!dt) return;
+      const file = dt.files && dt.files[0];
+      if (file) {
+        const text = await file.text();
+        editor.setValue(text);
+        tryFormat({ silent: true });
+        toast('ファイルをドロップで読み込んだよ 📄');
+      } else if (dt.getData('text')) {
+        editor.setValue(dt.getData('text'));
+        tryFormat({ silent: true });
+      }
+    });
+
+    // ショートカット: 整形 / ミニファイ
+    window.addEventListener('keydown', (e) => {
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key === 'Enter' && e.shiftKey) { e.preventDefault(); tryFormat({ minify: true }); }
+      else if (meta && e.key === 'Enter') { e.preventDefault(); tryFormat(); }
+    });
+  </script>
+</body>
+</html>
