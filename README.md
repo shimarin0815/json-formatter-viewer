@@ -1,6 +1,3 @@
-いいね、**読み手ファースト**でまとめた README をどうぞ！
-（そのまま `README.md` にコピペOKです）
-
 ---
 
 # JSON Formatter & Viewer ✨
@@ -182,12 +179,6 @@ python3 -m http.server
   4. `npx tailwindcss -i ./input.css -o ./output.css --watch`
   5. HTML から `output.css` を読み込む
      → ただしこのプロジェクトは **単一HTML** を主眼にしているため、CDN＋純CSS版が簡単＆おすすめ。
-
----
-
-## 📄 ライセンス
-
-MIT License（表記が必要なら追記してください）
 
 ---
 
